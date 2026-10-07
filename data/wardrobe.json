@@ -1,0 +1,22 @@
+[
+    {
+        "category": "Top",
+        "name": "White Oxford Shirt",
+        "color": "White"
+    },
+    {
+        "category": "Bottom",
+        "name": "Straight-Leg Chinos",
+        "color": "Navy"
+    },
+    {
+        "category": "Footwear",
+        "name": "Leather Sneakers",
+        "color": "White"
+    },
+    {
+        "category": "Outerwear",
+        "name": "Lightweight Field Jacket",
+        "color": "Olive"
+    }
+]
