@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 class OutfitItem(BaseModel):
@@ -41,3 +41,13 @@ class OutfitRecommendation(BaseModel):
         ...,
         description="Explanation of why this combination fits the occasion and weather"
     )
+
+
+class StylingTipPlan(BaseModel):
+    action: Literal["layer", "tuck_in", "coordinate_colors"]
+    items: List[OutfitItem] = Field(min_length=1, max_length=2)
+
+
+class OutfitPlan(BaseModel):
+    selected_items: List[OutfitItem] = Field(min_length=1)
+    styling_tips: List[StylingTipPlan] = Field(default_factory=list)

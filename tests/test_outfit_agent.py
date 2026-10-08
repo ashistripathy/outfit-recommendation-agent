@@ -4,7 +4,13 @@ from unittest.mock import patch
 
 from pydantic_ai.models.test import TestModel
 
-from src.agent.outfit_agent import EmptyWardrobeError, create_outfit_agent, recommend_outfit
+from src.agent.outfit_agent import (
+    EmptyWardrobeError,
+    InvalidOutfitPlanError,
+    _build_prompt,
+    create_outfit_agent,
+    recommend_outfit,
+)
 from src.schemas.outfit_models import OutfitItem
 from src.tools.weather_tool import CurrentWeather
 
@@ -27,28 +33,34 @@ class RecommendOutfitTests(unittest.IsolatedAsyncioTestCase):
             timezone="America/Los_Angeles",
         )
 
+    def test_prompt_includes_actual_wardrobe_records(self):
+        prompt = _build_prompt("Smart casual", self.wardrobe, self.weather)
+
+        self.assertIn("White Oxford Shirt", prompt)
+        self.assertIn("Navy Chinos", prompt)
+        self.assertNotIn("{wardrobe_json}", prompt)
+
     async def test_combines_context_and_corrects_wardrobe_provenance(self):
         model = TestModel(
             custom_output_text=json.dumps(
                 {
-                    "occasion": "Model changed this",
-                    "weather_summary": "Model invented this",
-                    "items": [
+                    "selected_items": [
+                        {"category": "top", "name": "white oxford shirt", "color": "white"},
+                        {"category": "bottom", "name": "navy chinos", "color": "navy"},
+                    ],
+                    "styling_tips": [
                         {
-                            "category": "Top",
-                            "name": "White Oxford Shirt",
-                            "color": "White",
-                            "is_from_wardrobe": False,
+                            "action": "tuck_in",
+                            "items": [{"category": "Top", "name": "White Oxford Shirt", "color": "White"}],
                         },
                         {
-                            "category": "Outerwear",
-                            "name": "Yellow Raincoat",
-                            "color": "Yellow",
-                            "is_from_wardrobe": True,
+                            "action": "coordinate_colors",
+                            "items": [
+                                {"category": "Top", "name": "White Oxford Shirt", "color": "White"},
+                                {"category": "Bottom", "name": "Navy Chinos", "color": "Navy"},
+                            ],
                         },
                     ],
-                    "styling_tips": ["Bring a light layer."],
-                    "reasoning": "The shirt works for this occasion.",
                 }
             )
         )
@@ -68,8 +80,63 @@ class RecommendOutfitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recommendation.occasion, "Smart casual")
         self.assertEqual(recommendation.weather_summary, self.weather.summary)
         self.assertTrue(recommendation.items[0].is_from_wardrobe)
-        self.assertFalse(recommendation.items[1].is_from_wardrobe)
+        self.assertTrue(recommendation.items[1].is_from_wardrobe)
+        self.assertEqual(
+            [item.name for item in recommendation.items],
+            [item.name for item in self.wardrobe],
+        )
+        self.assertEqual(
+            recommendation.styling_tips,
+            [
+                "Tuck in the White Oxford Shirt for a more polished look.",
+                "The White top and Navy bottom create a coordinated look.",
+            ],
+        )
+        self.assertNotIn("Outerwear", recommendation.reasoning)
         get_weather.assert_called_once_with("Seattle")
+
+    async def _recommend_using_plan(self, plan):
+        test_agent = create_outfit_agent(TestModel(custom_output_text=json.dumps(plan)))
+        with patch("src.agent.outfit_agent.get_wardrobe", return_value=self.wardrobe):
+            with patch("src.agent.outfit_agent.get_current_weather", return_value=self.weather):
+                return await recommend_outfit("Office", "Seattle", agent=test_agent)
+
+    async def test_rejects_unmatched_wardrobe_item(self):
+        with self.assertRaises(InvalidOutfitPlanError):
+            await self._recommend_using_plan(
+                {
+                    "selected_items": [
+                        {"category": "Accessory", "name": "Gold Watch", "color": "Gold"}
+                    ],
+                    "styling_tips": [],
+                }
+            )
+
+    async def test_rejects_duplicate_wardrobe_items(self):
+        oxford_shirt = {"category": "Top", "name": "White Oxford Shirt", "color": "White"}
+        with self.assertRaises(InvalidOutfitPlanError):
+            await self._recommend_using_plan(
+                {"selected_items": [oxford_shirt, oxford_shirt], "styling_tips": []}
+            )
+
+    async def test_rejects_tip_referencing_unselected_wardrobe_item(self):
+        from src.agent.outfit_agent import InvalidOutfitPlanError
+
+        plan = {
+            "selected_items": [
+                {"category": "Bottom", "name": "Navy Chinos", "color": "Navy"}
+            ],
+            "styling_tips": [
+                {
+                    "action": "tuck_in",
+                    "items": [
+                        {"category": "Top", "name": "White Oxford Shirt", "color": "White"}
+                    ],
+                }
+            ],
+        }
+        with self.assertRaises(InvalidOutfitPlanError):
+            await self._recommend_using_plan(plan)
 
     async def test_empty_wardrobe_fails_before_weather_or_model_call(self):
         with patch("src.agent.outfit_agent.get_wardrobe", return_value=[]):

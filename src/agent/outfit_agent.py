@@ -1,14 +1,14 @@
 import asyncio
 import json
 import os
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from dotenv import load_dotenv
 from pydantic_ai import Agent, PromptedOutput
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from src.schemas.outfit_models import OutfitItem, OutfitRecommendation
+from src.schemas.outfit_models import OutfitItem, OutfitPlan, OutfitRecommendation
 from src.tools.wardrobe_tool import get_wardrobe
 from src.tools.weather_tool import CurrentWeather, get_current_weather
 
@@ -19,12 +19,13 @@ DEFAULT_MODEL_NAME = "qwen2.5:7b"
 DEFAULT_MODEL_BASE_URL = "http://localhost:11434/v1"
 
 AGENT_INSTRUCTIONS = (
-    "Recommend a practical outfit for the requested occasion using the supplied "
-    "weather and wardrobe. Prefer supplied wardrobe items. Only describe an item "
-    "as wardrobe-owned when it exactly matches a supplied item; mark new purchase "
-    "suggestions with is_from_wardrobe=false. Include a complete outfit, useful "
-    "styling tips, and concise reasoning. Write all user-facing text in clear, "
-    "natural English. Do not invent weather data."
+    "Select a practical outfit for the requested occasion using only items from "
+    "the supplied wardrobe. Copy each selected item's category, name, and color "
+    "exactly from the wardrobe; do not invent garments. Styling tips must reference "
+    "only selected wardrobe items and use only the allowed structured actions. "
+    "Use layer with exactly two items, tuck_in with exactly one top, and "
+    "coordinate_colors with exactly two items. Do not return free-text advice, "
+    "weather, or reasoning."
 )
 _default_agent = None
 
@@ -41,7 +42,7 @@ def create_outfit_agent(model=None) -> Agent:
         )
     return Agent(
         model=model,
-        output_type=PromptedOutput(OutfitRecommendation),
+        output_type=PromptedOutput(OutfitPlan),
         instructions=AGENT_INSTRUCTIONS,
     )
 
@@ -56,6 +57,10 @@ def get_outfit_agent() -> Agent:
 
 class EmptyWardrobeError(ValueError):
     """Raised when an outfit cannot be assembled because no wardrobe items exist."""
+
+
+class InvalidOutfitPlanError(ValueError):
+    """Raised when the model returns invalid wardrobe references or styling actions."""
 
 
 def _item_identity(item: OutfitItem) -> Tuple[str, str, str]:
@@ -83,21 +88,70 @@ async def recommend_outfit(
     weather = await asyncio.to_thread(get_current_weather, location.strip())
     prompt = _build_prompt(occasion.strip(), wardrobe, weather)
     result = await (agent or get_outfit_agent()).run(prompt)
+    plan = result.output
 
-    wardrobe_items: Set[Tuple[str, str, str]] = {_item_identity(item) for item in wardrobe}
+    wardrobe_by_identity = {_item_identity(item): item for item in wardrobe}
+    selected_identities = [_item_identity(item) for item in plan.selected_items]
+    if len(set(selected_identities)) != len(selected_identities):
+        raise InvalidOutfitPlanError("The outfit plan selected a wardrobe item more than once")
+    if any(identity not in wardrobe_by_identity for identity in selected_identities):
+        raise InvalidOutfitPlanError("The outfit plan refers to an item outside the wardrobe")
+
+    selected_identity_set = set(selected_identities)
     recommended_items = [
-        item.model_copy(update={"is_from_wardrobe": _item_identity(item) in wardrobe_items})
-        for item in result.output.items
+        wardrobe_by_identity[identity].model_copy(update={"is_from_wardrobe": True})
+        for identity in selected_identities
     ]
+    styling_tips = _render_styling_tips(plan, selected_identity_set, wardrobe_by_identity)
+    selected_names = ", ".join(item.name for item in recommended_items)
+    reasoning = (
+        f"Selected {selected_names} from your wardrobe for {occasion.strip()}. "
+        f"Current conditions in {weather.location}: {weather.summary}."
+    )
 
     return OutfitRecommendation.model_validate(
         {
-            **result.output.model_dump(),
             "occasion": occasion.strip(),
             "weather_summary": weather.summary,
             "items": recommended_items,
+            "styling_tips": styling_tips,
+            "reasoning": reasoning,
         }
     )
+
+
+def _render_styling_tips(
+    plan: OutfitPlan,
+    selected_identities: Set[Tuple[str, str, str]],
+    wardrobe_by_identity: Dict[Tuple[str, str, str], OutfitItem],
+) -> List[str]:
+    rendered_tips = []
+    for tip in plan.styling_tips:
+        identities = [_item_identity(item) for item in tip.items]
+        if len(set(identities)) != len(identities):
+            raise InvalidOutfitPlanError("A styling tip cannot reference the same item more than once")
+        if any(identity not in wardrobe_by_identity for identity in identities):
+            raise InvalidOutfitPlanError("A styling tip refers to an item outside the wardrobe")
+        if any(identity not in selected_identities for identity in identities):
+            raise InvalidOutfitPlanError("A styling tip refers to an item not selected for the outfit")
+
+        items = [wardrobe_by_identity[identity] for identity in identities]
+        if tip.action == "layer":
+            if len(items) != 2:
+                raise InvalidOutfitPlanError("The layer action requires exactly two selected items")
+            rendered_tips.append(f"Layer {items[0].name} with {items[1].name} for a versatile outfit.")
+        elif tip.action == "tuck_in":
+            if len(items) != 1 or items[0].category.casefold() != "top":
+                raise InvalidOutfitPlanError("The tuck_in action requires exactly one top")
+            rendered_tips.append(f"Tuck in the {items[0].name} for a more polished look.")
+        elif tip.action == "coordinate_colors":
+            if len(items) != 2:
+                raise InvalidOutfitPlanError("The coordinate_colors action requires exactly two selected items")
+            rendered_tips.append(
+                f"The {items[0].color} {items[0].category.lower()} and "
+                f"{items[1].color} {items[1].category.lower()} create a coordinated look."
+            )
+    return rendered_tips
 
 
 def _build_prompt(
@@ -115,7 +169,9 @@ def _build_prompt(
         f"Current weather: {weather.summary}\n"
         f"Weather observation time: {weather.observed_at} ({weather.timezone})\n"
         f"Available wardrobe items (JSON): {wardrobe_json}\n"
-        "Create one complete recommendation. Prefer the available wardrobe and do not "
-        "claim unavailable items are owned. Any suggested purchase must be marked "
-        "is_from_wardrobe=false."
+        "Return selected_items by copying each category, name, and color exactly from "
+        "the wardrobe. Return styling_tips as structured actions referencing those same "
+        "item objects: layer uses two selected items, tuck_in uses one selected top, "
+        "and coordinate_colors uses two selected items. "
+        "Do not generate item descriptions, purchase suggestions, or free-text advice."
     )
