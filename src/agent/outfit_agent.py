@@ -4,8 +4,8 @@ import os
 from typing import List, Optional, Set, Tuple
 
 from dotenv import load_dotenv
-from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai import Agent, PromptedOutput
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from src.schemas.outfit_models import OutfitItem, OutfitRecommendation
@@ -23,7 +23,8 @@ AGENT_INSTRUCTIONS = (
     "weather and wardrobe. Prefer supplied wardrobe items. Only describe an item "
     "as wardrobe-owned when it exactly matches a supplied item; mark new purchase "
     "suggestions with is_from_wardrobe=false. Include a complete outfit, useful "
-    "styling tips, and concise reasoning. Do not invent weather data."
+    "styling tips, and concise reasoning. Write all user-facing text in clear, "
+    "natural English. Do not invent weather data."
 )
 _default_agent = None
 
@@ -31,14 +32,18 @@ _default_agent = None
 def create_outfit_agent(model=None) -> Agent:
     """Create an agent using an injected PydanticAI model or local Ollama defaults."""
     if model is None:
-        model = OpenAIModel(
+        model = OpenAIChatModel(
             os.getenv("OUTFIT_AGENT_MODEL", DEFAULT_MODEL_NAME),
             provider=OpenAIProvider(
                 base_url=os.getenv("OUTFIT_AGENT_BASE_URL", DEFAULT_MODEL_BASE_URL),
                 api_key=os.getenv("OUTFIT_AGENT_API_KEY", "ollama"),
             ),
         )
-    return Agent(model=model, output_type=OutfitRecommendation, instructions=AGENT_INSTRUCTIONS)
+    return Agent(
+        model=model,
+        output_type=PromptedOutput(OutfitRecommendation),
+        instructions=AGENT_INSTRUCTIONS,
+    )
 
 
 def get_outfit_agent() -> Agent:

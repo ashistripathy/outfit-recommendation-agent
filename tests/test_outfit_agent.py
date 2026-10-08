@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import patch
 
@@ -28,26 +29,28 @@ class RecommendOutfitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_combines_context_and_corrects_wardrobe_provenance(self):
         model = TestModel(
-            custom_output_args={
-                "occasion": "Model changed this",
-                "weather_summary": "Model invented this",
-                "items": [
-                    {
-                        "category": "Top",
-                        "name": "White Oxford Shirt",
-                        "color": "White",
-                        "is_from_wardrobe": False,
-                    },
-                    {
-                        "category": "Outerwear",
-                        "name": "Yellow Raincoat",
-                        "color": "Yellow",
-                        "is_from_wardrobe": True,
-                    },
-                ],
-                "styling_tips": ["Bring a light layer."],
-                "reasoning": "The shirt works for this occasion.",
-            }
+            custom_output_text=json.dumps(
+                {
+                    "occasion": "Model changed this",
+                    "weather_summary": "Model invented this",
+                    "items": [
+                        {
+                            "category": "Top",
+                            "name": "White Oxford Shirt",
+                            "color": "White",
+                            "is_from_wardrobe": False,
+                        },
+                        {
+                            "category": "Outerwear",
+                            "name": "Yellow Raincoat",
+                            "color": "Yellow",
+                            "is_from_wardrobe": True,
+                        },
+                    ],
+                    "styling_tips": ["Bring a light layer."],
+                    "reasoning": "The shirt works for this occasion.",
+                }
+            )
         )
         test_agent = create_outfit_agent(model)
 
