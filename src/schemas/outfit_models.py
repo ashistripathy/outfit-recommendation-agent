@@ -30,6 +30,7 @@ class OutfitRecommendation(BaseModel):
     )
     items: List[OutfitItem] = Field(
         ...,
+        min_length=1,
         description="List of garments composing the full outfit"
     )
     styling_tips: List[str] = Field(
