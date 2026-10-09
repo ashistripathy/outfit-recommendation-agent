@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -44,6 +44,24 @@ class WeatherLookupError(RuntimeError):
     """Raised when a location or current weather cannot be retrieved."""
 
 
+class LocationSuggestion(BaseModel):
+    name: str
+    latitude: float
+    longitude: float
+    admin1: Optional[str] = None
+    country: Optional[str] = None
+    country_code: Optional[str] = None
+
+    @property
+    def label(self) -> str:
+        parts = [self.name]
+        if self.admin1 and self.admin1.casefold() != self.name.casefold():
+            parts.append(self.admin1)
+        if self.country:
+            parts.append(self.country)
+        return ", ".join(parts)
+
+
 class CurrentWeather(BaseModel):
     location: str
     temperature_c: float
@@ -79,30 +97,81 @@ def _get_json(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
-def get_current_weather(location: str) -> CurrentWeather:
-    """Resolve a city and retrieve its current conditions from Open-Meteo."""
-    if not location or not location.strip():
+def _get_location_candidates(query: str) -> List[LocationSuggestion]:
+    """Search Open-Meteo for places matching a city or region name."""
+    if not query or len(query.strip()) < 3:
+        return []
+
+    try:
+        search_queries = [query.strip()]
+        if "bangalore" in query.casefold():
+            search_queries.append("Bengaluru")
+
+        suggestions = []
+        seen_coordinates = set()
+        for search_query in search_queries:
+            geocoding_data = _get_json(
+                GEOCODING_URL,
+                {"name": search_query, "count": 8, "language": "en", "format": "json"},
+            )
+            results = geocoding_data.get("results", [])
+            if not isinstance(results, list):
+                raise WeatherLookupError("Open-Meteo returned invalid location suggestions")
+            for result in results:
+                suggestion = LocationSuggestion.model_validate(result)
+                coordinates = (suggestion.latitude, suggestion.longitude)
+                if coordinates not in seen_coordinates:
+                    suggestions.append(suggestion)
+                    seen_coordinates.add(coordinates)
+        return suggestions
+    except ValidationError as error:
+        raise WeatherLookupError("Open-Meteo returned incomplete location suggestions") from error
+
+
+def _resolve_location(location: str) -> LocationSuggestion:
+    query = location.strip()
+    if not query:
         raise ValueError("Location must not be empty")
 
-    geocoding_data = _get_json(
-        GEOCODING_URL,
-        {"name": location.strip(), "count": 1, "language": "en", "format": "json"},
-    )
-    results = geocoding_data.get("results")
-    if not isinstance(results, list) or not results:
-        raise WeatherLookupError(f"Could not find a location named '{location.strip()}'")
+    normalized_query = query.casefold()
+    if normalized_query in {"karnataka", "karnataka, india"}:
+        search_query = "Bengaluru"
+    else:
+        search_query = query
 
-    place = results[0]
+    suggestions = _get_location_candidates(search_query)
+    if not suggestions:
+        raise WeatherLookupError(
+            "Could not find that location. Enter a city name, for example Bengaluru or Bengaluru, Karnataka, India."
+        )
+
+    if "bangalore" in normalized_query or normalized_query in {"karnataka", "karnataka, india"}:
+        india_city = next(
+            (
+                suggestion
+                for suggestion in suggestions
+                if suggestion.country_code == "IN"
+                and suggestion.name.casefold() in {"bengaluru", "bangalore"}
+            ),
+            None,
+        )
+        if india_city is not None:
+            return india_city
+
+    return suggestions[0]
+
+
+def get_current_weather(location: str) -> CurrentWeather:
+    """Retrieve current conditions, resolving ambiguous city names automatically."""
+    if not location or not location.strip():
+        raise ValueError("Location must not be empty")
+    place = _resolve_location(location)
+    resolved_location = place.label
+
     try:
-        latitude = place["latitude"]
-        longitude = place["longitude"]
-        location_parts = [place["name"]]
-        if place.get("admin1") and place["admin1"] != place["name"]:
-            location_parts.append(place["admin1"])
-        if place.get("country"):
-            location_parts.append(place["country"])
-        resolved_location = ", ".join(location_parts)
-    except (KeyError, TypeError) as error:
+        latitude = place.latitude
+        longitude = place.longitude
+    except (AttributeError, TypeError) as error:
         raise WeatherLookupError("Open-Meteo returned incomplete location data") from error
 
     forecast_data = _get_json(

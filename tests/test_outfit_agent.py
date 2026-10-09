@@ -153,6 +153,33 @@ class RecommendOutfitTests(unittest.IsolatedAsyncioTestCase):
 
         get_wardrobe.assert_not_called()
 
+    async def test_free_text_location_is_sent_to_weather_resolution(self):
+        test_agent = create_outfit_agent(
+            TestModel(
+                custom_output_text=json.dumps(
+                    {
+                        "selected_items": [
+                            {"category": "Top", "name": "White Oxford Shirt", "color": "White"}
+                        ],
+                        "styling_tips": [],
+                    }
+                )
+            )
+        )
+
+        with patch("src.agent.outfit_agent.get_wardrobe", return_value=self.wardrobe):
+            with patch(
+                "src.agent.outfit_agent.get_current_weather",
+                return_value=self.weather,
+            ) as get_weather:
+                await recommend_outfit(
+                    "Work",
+                    "Bangalore",
+                    agent=test_agent,
+                )
+
+            get_weather.assert_called_once_with("Bangalore")
+
 
 if __name__ == "__main__":
     unittest.main()

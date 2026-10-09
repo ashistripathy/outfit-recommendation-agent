@@ -19,6 +19,101 @@ def make_response(payload):
 
 class GetCurrentWeatherTests(unittest.TestCase):
     @patch("src.tools.weather_tool.httpx.get")
+    def test_free_text_bangalore_prefers_bengaluru_india(self, get):
+        get.side_effect = [
+            make_response(
+                {
+                    "results": [
+                        {
+                            "name": "Bangalore Town",
+                            "admin1": "Sindh",
+                            "country": "Pakistan",
+                            "country_code": "PK",
+                            "latitude": 24.8717,
+                            "longitude": 67.0839,
+                        }
+                    ]
+                }
+            ),
+            make_response(
+                {
+                    "results": [
+                        {
+                            "name": "Bengaluru",
+                            "admin1": "Karnataka",
+                            "country": "India",
+                            "country_code": "IN",
+                            "latitude": 12.97194,
+                            "longitude": 77.59369,
+                        }
+                    ]
+                }
+            ),
+            make_response(
+                {
+                    "timezone": "Asia/Kolkata",
+                    "current": {
+                        "time": "2026-10-09T12:00",
+                        "temperature_2m": 28,
+                        "apparent_temperature": 30,
+                        "relative_humidity_2m": 60,
+                        "precipitation": 0,
+                        "weather_code": 1,
+                        "wind_speed_10m": 5,
+                    },
+                }
+            ),
+        ]
+
+        weather = get_current_weather("Bangalore")
+
+        self.assertEqual(weather.location, "Bengaluru, Karnataka, India")
+        self.assertEqual(get.call_count, 3)
+        self.assertEqual(get.call_args_list[0].kwargs["params"]["name"], "Bangalore")
+        self.assertEqual(get.call_args_list[1].kwargs["params"]["name"], "Bengaluru")
+        self.assertEqual(get.call_args_list[2].kwargs["params"]["latitude"], 12.97194)
+        self.assertEqual(get.call_args_list[2].kwargs["params"]["longitude"], 77.59369)
+
+    @patch("src.tools.weather_tool.httpx.get")
+    def test_state_only_karnataka_uses_bengaluru(self, get):
+        get.side_effect = [
+            make_response(
+                {
+                    "results": [
+                        {
+                            "name": "Bengaluru",
+                            "admin1": "Karnataka",
+                            "country": "India",
+                            "country_code": "IN",
+                            "latitude": 12.97194,
+                            "longitude": 77.59369,
+                        }
+                    ]
+                }
+            ),
+            make_response(
+                {
+                    "timezone": "Asia/Kolkata",
+                    "current": {
+                        "time": "2026-10-09T12:00",
+                        "temperature_2m": 28,
+                        "apparent_temperature": 30,
+                        "relative_humidity_2m": 60,
+                        "precipitation": 0,
+                        "weather_code": 1,
+                        "wind_speed_10m": 5,
+                    },
+                }
+            ),
+        ]
+
+        weather = get_current_weather("Karnataka")
+
+        self.assertEqual(weather.location, "Bengaluru, Karnataka, India")
+        self.assertEqual(get.call_args_list[0].kwargs["params"]["name"], "Bengaluru")
+        self.assertEqual(get.call_args_list[1].kwargs["params"]["latitude"], 12.97194)
+
+    @patch("src.tools.weather_tool.httpx.get")
     def test_resolves_location_and_returns_current_conditions(self, get):
         get.side_effect = [
             make_response(
